@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import json
 import requests
-from io import BytesIO
 import urllib3
 import base64
 import os
@@ -67,12 +66,14 @@ with col1:
 with col2:
     st.markdown("# Cosmic Case SLA Prediction with CatBoost")
 
-# --- File Upload Logic ---
-uploaded_file = st.file_uploader("Upload inference CSV/Excel", type=["csv", "xlsx", "xls"])
-
+# --- Initialize Session State ---
 if "data" not in st.session_state: st.session_state.data = None
 if "built_payload" not in st.session_state: st.session_state.built_payload = None
 if "inference_result" not in st.session_state: st.session_state.inference_result = None
+if "final_display_df" not in st.session_state: st.session_state.final_display_df = None
+
+# --- File Upload Logic ---
+uploaded_file = st.file_uploader("Upload inference CSV/Excel", type=["csv", "xlsx", "xls"])
 
 if uploaded_file:
     try:
@@ -80,10 +81,6 @@ if uploaded_file:
         st.session_state.data = df
         st.success(f"File loaded: {len(df)} records found.")
         st.dataframe(df, use_container_width=True)
-
-        # with st.expander("View Data Column Types"):
-        #     st.write(df.dtypes.to_dict())
-
     except Exception as e:
         st.error(f"Error reading file: {e}")
 
@@ -93,7 +90,6 @@ if st.session_state.data is not None:
 
     if st.button("Build json payload"):
         row_data = st.session_state.data.iloc[row_num - 1].to_dict()
-        # Clean up types for JSON serialization
         row_data_cleaned = json.loads(pd.Series(row_data).to_json(date_format='iso'))
         st.session_state.built_payload = json.dumps(row_data_cleaned, indent=2)
         st.code(st.session_state.built_payload, language="json")
@@ -101,11 +97,7 @@ if st.session_state.data is not None:
     if st.button("Inference", type="primary", disabled=not st.session_state.built_payload):
         try:
             payload_json = json.loads(st.session_state.built_payload)
-
             with st.spinner(f"Sending request to Azure..."):
-                # DEBUG: Print payload to console
-                print(f"DEBUG SENDING: {payload_json}")
-
                 response = requests.post(
                     api_url,
                     json=payload_json,
@@ -114,73 +106,104 @@ if st.session_state.data is not None:
                     verify=False
                 )
 
-                # DEBUG: Show what happened in the UI
-                # with st.expander("🪲 Debug Information", expanded=True):
-                #     st.write("**Endpoint:**", api_url)
-                #     st.write("**Payload Sent:**")
-                #     st.json(payload_json)
-                #     st.write("**Response Status Code:**", response.status_code)
-
                 if response.status_code == 200:
                     st.session_state.inference_result = response.json()
                     st.success("Success!")
-                    st.write("**Prediction Output:**")
-                    # st.json(st.session_state.inference_result)
-                    # --- REVISED SECTION START ---
-                    # Access the 'results' list from the JSON and display as a table
+
                     results_list = st.session_state.inference_result.get("results", [])
                     if results_list:
-                        # 1. Convert the Azure results to a DataFrame
                         results_df = pd.DataFrame(results_list)
+                        selected_extra_columns = ["msdyn_receiveddate"]
 
-                        # 2. DEFINE EXTRA COLUMNS: Add your desired column names from the data file here
-                        selected_extra_columns = ["msdyn_receiveddate","actual_resolve_dt"]
-
-                        # 3. Extract those columns from the specific row we just predicted
-                        # We use [row_num - 1] to match the row used for the "Build payload" step
                         extra_data = st.session_state.data.iloc[[row_num - 1]][selected_extra_columns].reset_index(
                             drop=True)
 
-                        ##Remove decimals from resolution minutes
                         if 'predicted_resolution_minutes' in results_df.columns:
                             results_df['predicted_resolution_minutes'] = pd.to_numeric(
                                 results_df['predicted_resolution_minutes']).round(0).astype(int)
 
-                        ##ensure both are same datetime objects
-                        extra_data['msdyn_receiveddate'] = pd.to_datetime(extra_data['msdyn_receiveddate'])
-                        results_df['predicted_resolved_date'] = pd.to_datetime(results_df['predicted_resolved_date'])
+                        # Store unformatted datetimes for delta calculation
+                        results_df['_dt_pred'] = pd.to_datetime(results_df['predicted_resolved_date'])
 
-                        extra_data['msdyn_receiveddate'] = extra_data['msdyn_receiveddate'].dt.strftime(
+                        # Formatting for display
+                        extra_data['msdyn_receiveddate'] = pd.to_datetime(extra_data['msdyn_receiveddate']).dt.strftime(
                             '%m/%d/%Y %H:%M:%S')
-                        results_df['predicted_resolved_date'] = results_df['predicted_resolved_date'].dt.strftime(
-                            '%m/%d/%Y %H:%M:%S')
+                        results_df['predicted_resolved_date'] = results_df['_dt_pred'].dt.strftime('%m/%d/%Y %H:%M:%S')
 
-                        # 4. Combine the extra columns with the results
-                        final_display_df = pd.concat([results_df, extra_data], axis=1)
-
-                        ##List your columns in the exact order you want them to appear
-                        column_order = [
-                            "TicketNumber",
-                            "msdyn_receiveddate",
-                            "predicted_resolved_date",
-                            "actual_resolve_dt",
-                            "predicted_resolution_minutes"
-                        ]
-                        ###Apply the order
-                        existing_cols = [col for col in column_order if col in final_display_df.columns]
-                        final_display_df = final_display_df[existing_cols]
-
-                        # 5. Display the final table
-                        st.dataframe(final_display_df, use_container_width=True)
+                        # Combine into session state
+                        st.session_state.final_display_df = pd.concat([results_df, extra_data], axis=1)
                     else:
-                        st.warning("No results found in the response.")                    # --- REVISED SECTION END ---
+                        st.warning("No results found in the response.")
                 else:
                     st.error(f"Error: Server returned {response.status_code}")
-                    st.write(response.text)
-
-        except requests.exceptions.Timeout:
-            st.error("The request timed out.")
         except Exception as e:
             st.error(f"An unexpected error occurred: {e}")
+
+    # --- Integrated Result Section ---
+    if st.session_state.final_display_df is not None:
+        st.markdown("---")
+        st.subheader("Prediction Analysis & Validation with Actuals")
+
+        # Second File Uploader
+        actuals_file = st.file_uploader("Upload Actuals file to calculate Delta", type=["csv", "xlsx"])
+
+        if actuals_file:
+            try:
+                act_df = pd.read_csv(actuals_file) if actuals_file.name.endswith('.csv') else pd.read_excel(
+                    actuals_file)
+                tid = st.session_state.final_display_df["TicketNumber"].iloc[0]
+                match = act_df[act_df["TicketNumber"] == tid]
+
+                if not match.empty:
+                    # Extraction & Calculation
+                    actual_dt = pd.to_datetime(match["actual_resolve_dt"].iloc[0])
+                    pred_dt = st.session_state.final_display_df["_dt_pred"].iloc[0]
+                    delta_mins = ((actual_dt - pred_dt).total_seconds() / 60)
+                    actual_dur = match["actual_Duration"].iloc[0]
+
+                    # Update existing session state dataframe
+                    st.session_state.final_display_df["Actual_Resolve_Value"] = actual_dt.strftime('%m/%d/%Y %H:%M:%S')
+                    st.session_state.final_display_df["actual_Duration"] = actual_dur
+                    st.session_state.final_display_df["Delta_Minutes"] = abs(round(delta_mins, 0))
+                    st.session_state.final_display_df["SLA_Status"] = "Early" if delta_mins > 0 else "Delay"
+
+                    st.success("Actuals and Delta updated successfully!")
+                else:
+                    st.warning(f"Ticket {tid} not found in actuals file.")
+            except Exception as e:
+                st.error(f"Error matching actuals: {e}")
+
+        # --- Display Configuration ---
+        column_order = [
+            "TicketNumber",
+            "msdyn_receiveddate",
+            "predicted_resolved_date",
+            "Actual_Resolve_Value",
+            "actual_Duration",
+            "predicted_resolution_minutes",
+            "Delta_Minutes",
+            "SLA_Status"
+        ]
+
+        column_mapping = {
+            "TicketNumber": "Ticket ID",
+            "msdyn_receiveddate": "Received Date",
+            "predicted_resolved_date": "Predicted Resolution Date",
+            "Actual_Resolve_Value": "Actual Resolution Date",
+            "actual_Duration": "Actual Duration (Mins)",
+            "predicted_resolution_minutes": "Predicted Duration (Mins)",
+            "Delta_Minutes": "Delta (Mins)",
+            "SLA_Status": "Status"
+        }
+
+        # Filter to show only columns that exist
+        cols_to_show = [c for c in column_order if c in st.session_state.final_display_df.columns]
+
+        # Prepare display dataframe with renamed columns
+        display_df = st.session_state.final_display_df[cols_to_show].rename(columns=column_mapping)
+
+        # Final Table Output (Standard display, no background highlighting)
+        st.dataframe(display_df, use_container_width=True)
+
 else:
     st.info("Please upload a file to begin.")
