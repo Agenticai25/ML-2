@@ -174,6 +174,15 @@ if st.session_state.data is not None:
                 st.error(f"Error matching actuals: {e}")
 
         # --- Display Configuration ---
+
+        # 1. FORCED LEFT ALIGNMENT: Convert numeric columns to string (objects)
+        cols_to_convert = ["actual_Duration", "predicted_resolution_minutes", "Delta_Minutes"]
+        for col in cols_to_convert:
+            if col in st.session_state.final_display_df.columns:
+                # Fill NaN with empty string then convert to string to ensure left alignment
+                st.session_state.final_display_df[col] = st.session_state.final_display_df[col].astype(str).replace(
+                    'nan', '')
+
         column_order = [
             "TicketNumber",
             "msdyn_receiveddate",
@@ -185,25 +194,27 @@ if st.session_state.data is not None:
             "SLA_Status"
         ]
 
-        column_mapping = {
-            "TicketNumber": "Ticket ID",
-            "msdyn_receiveddate": "Received Date",
-            "predicted_resolved_date": "Predicted Resolution Date",
-            "Actual_Resolve_Value": "Actual Resolution Date",
-            "actual_Duration": "Actual Duration (Mins)",
-            "predicted_resolution_minutes": "Predicted Duration (Mins)",
-            "Delta_Minutes": "Delta (Mins)",
-            "SLA_Status": "Status"
-        }
-
         # Filter to show only columns that exist
         cols_to_show = [c for c in column_order if c in st.session_state.final_display_df.columns]
+        display_df = st.session_state.final_display_df[cols_to_show]
 
-        # Prepare display dataframe with renamed columns
-        display_df = st.session_state.final_display_df[cols_to_show].rename(columns=column_mapping)
-
-        # Final Table Output (Standard display, no background highlighting)
-        st.dataframe(display_df, use_container_width=True)
+        # 2. UI CONFIGURATION: Use TextColumn for everything to force left alignment
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "TicketNumber": st.column_config.TextColumn("Ticket ID"),
+                "msdyn_receiveddate": st.column_config.TextColumn("Received Date"),
+                "predicted_resolved_date": st.column_config.TextColumn("Predicted Resolution Date"),
+                "Actual_Resolve_Value": st.column_config.TextColumn("Actual Resolution Date"),
+                "actual_Duration": st.column_config.TextColumn("Actual Duration (Mins)"),
+                "predicted_resolution_minutes": st.column_config.TextColumn("Predicted Duration (Mins)"),
+                "Delta_Minutes": st.column_config.TextColumn("Delta (Mins)"),
+                "SLA_Status": st.column_config.TextColumn("Status")
+            }
+        )
 
 else:
     st.info("Please upload a file to begin.")
+
